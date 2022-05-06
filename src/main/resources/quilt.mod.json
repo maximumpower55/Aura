@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "quilt_loader": {
+    "group": "me.maximumpower55",
+    "id": "aura",
+    "version": "1.0.0-pre-alpha1",
+    "metadata": {
+      "name": "Aura",
+      "description": "",
+      "contributors": {
+        "Maximumpower55": "Owner"
+      },
+      "contact": {
+        "homepage": "https://modrinth.com/mod/aura",
+        "sources": "https://github.com/maximumpower55/Aura.git",
+        "issues": "https://github.com/maximumpower55/Aura/issues"
+      },
+      "license": "LGPL-3.0-only",
+      "icon": "assets/aura/icon.png"
+    },
+    "entrypoints": {
+      "init": ["me.maximumpower55.aura.AuraMod"],
+      "client_init": ["me.maximumpower55.aura.AuraClientMod"],
+      "cardinal-components": ["me.maximumpower55.aura.component.AuraComponents"],
+      "fabric-datagen": ["me.maximumpower55.aura.datagen.AuraDatagen"]
+    },
+    "intermediate_mappings": "net.fabricmc:intermediary",
+    "depends": [
+      {
+        "id": "quilt_loader",
+        "version": "*"
+      },
+      {
+        "id": "minecraft",
+        "version": ">=1.18.2 <1.19"
+      },
+      {
+        "id": "modmenu",
+        "version": ">=3.0.0",
+        "optional": true
+      }
+    ]
+  },
+  "minecraft": {
+    "environment": "*"
+  },
+  "mixin": "aura.mixins.json",
+  "access_widener": "aura.accesswidener",
+  "cardinal-components": ["aura:mana"]
+}
