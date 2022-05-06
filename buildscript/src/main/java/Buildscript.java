@@ -1,12 +1,23 @@
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
+import java.util.zip.ZipFile;
+
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 
 import org.jetbrains.annotations.Nullable;
 
@@ -15,6 +26,8 @@ import io.github.coolcrabs.brachyura.decompiler.fernflower.FernflowerDecompiler;
 import io.github.coolcrabs.brachyura.dependency.JavaJarDependency;
 import io.github.coolcrabs.brachyura.fabric.FabricContext.ModDependencyCollector;
 import io.github.coolcrabs.brachyura.fabric.FabricContext.ModDependencyFlag;
+import io.github.coolcrabs.brachyura.fabric.AccessWidenerRemapper;
+import io.github.coolcrabs.brachyura.fabric.FabricContext;
 import io.github.coolcrabs.brachyura.fabric.FabricLoader;
 import io.github.coolcrabs.brachyura.ide.IdeModule;
 import io.github.coolcrabs.brachyura.mappings.Namespaces;
@@ -22,13 +35,21 @@ import io.github.coolcrabs.brachyura.maven.MavenId;
 import io.github.coolcrabs.brachyura.maven.Maven;
 import io.github.coolcrabs.brachyura.minecraft.Minecraft;
 import io.github.coolcrabs.brachyura.minecraft.VersionMeta;
+import io.github.coolcrabs.brachyura.processing.ProcessingEntry;
+import io.github.coolcrabs.brachyura.processing.ProcessingId;
+import io.github.coolcrabs.brachyura.processing.ProcessingSink;
+import io.github.coolcrabs.brachyura.processing.ProcessorChain;
+import io.github.coolcrabs.brachyura.processing.sinks.AtomicZipProcessingSink;
+import io.github.coolcrabs.brachyura.processing.sources.ZipProcessingSource;
 import io.github.coolcrabs.brachyura.project.java.BuildModule;
 import io.github.coolcrabs.brachyura.quilt.QuiltContext;
 import io.github.coolcrabs.brachyura.quilt.QuiltMaven;
 import io.github.coolcrabs.brachyura.quilt.QuiltModule;
 import io.github.coolcrabs.brachyura.quilt.SimpleQuiltProject;
+import io.github.coolcrabs.brachyura.util.GsonUtil;
 import io.github.coolcrabs.brachyura.util.Lazy;
 import io.github.coolcrabs.brachyura.util.PathUtil;
+import io.github.coolcrabs.brachyura.util.Util;
 import net.fabricmc.accesswidener.AccessWidenerReader;
 import net.fabricmc.accesswidener.AccessWidenerVisitor;
 import net.fabricmc.mappingio.tree.MappingTree;
@@ -105,6 +126,79 @@ public class Buildscript extends SimpleQuiltProject {
 	@Override
 	public Path getBuildJarPath() {
 		return getBuildLibsDir().resolve(String.format("%s-mc-%s-%s.jar", getModId(), createMcVersion().version, getVersion()));
+	}
+
+	@Override
+	protected FabricContext createContext() {
+		return new SimpleQuiltContext() {
+			@Override
+			public ProcessorChain resourcesProcessingChain(List<JavaJarDependency> jij) {
+				Path fmjgen = getLocalBrachyuraPath().resolve("fmjgen");
+				if (Files.exists(fmjgen)) PathUtil.deleteDirectory(fmjgen);
+				List<Path> jij2 = new ArrayList<>();
+				for (JavaJarDependency mod : jij) {
+						try {
+							try (ZipFile f = new ZipFile(mod.jar.toFile())) {
+								if (f.getEntry("fabric.mod.json") == null && f.getEntry("quilt.mod.json") == null) {
+									Path p = fmjgen.resolve(mod.jar.getFileName());
+									try (
+										ZipProcessingSource s = new ZipProcessingSource(mod.jar);
+										AtomicZipProcessingSink sink = new AtomicZipProcessingSink(p)
+									) {
+										new ProcessorChain(new FmjGenerator(Collections.singletonMap(s, mod.mavenId))).apply(sink, s);
+										sink.commit();
+									}
+									jij2.add(p);
+								} else {
+									jij2.add(mod.jar);
+								}
+							}
+						} catch (Exception e) {
+							throw Util.sneak(e);
+						}
+				}
+				return new ProcessorChain(QmjRefmapApplier.INSTANCE, new FixedQmjJijApplier(jij2), new AccessWidenerRemapper(mappings.get(), mappings.get().getNamespaceId(Namespaces.INTERMEDIARY), QuiltAwCollector.INSTANCE));
+			}
+
+			class FixedQmjJijApplier extends QmjJijApplier {
+				final List<Path> jij;
+
+				public FixedQmjJijApplier(List<Path> jij) {
+					super(jij);
+					this.jij = jij;
+				}
+
+				@Override
+				public void process(Collection<ProcessingEntry> inputs, ProcessingSink sink) throws IOException {
+					for (ProcessingEntry e : inputs) {
+						if (!jij.isEmpty() && "quilt.mod.json".equals(e.id.path)) {
+							Gson gson = new GsonBuilder().setPrettyPrinting().setLenient().create();
+							JsonObject quiltModJson;
+							try (BufferedReader reader = new BufferedReader(new InputStreamReader(e.in.get(), StandardCharsets.UTF_8))) {
+								quiltModJson = gson.fromJson(reader, JsonObject.class);
+							}
+							JsonArray jars = new JsonArray();
+							quiltModJson.getAsJsonObject("quilt_loader").add("jars", jars);
+							List<String> used = new ArrayList<>();
+							for (Path jar : jij) {
+								String path = "META-INF/jars/" + jar.getFileName();
+								int a = 0;
+								while (used.contains(path)) {
+									path = "META-INF/jars/" + a + jar.getFileName();
+									a++;
+								}
+								jars.add(path);
+								used.add(path);
+								sink.sink(() -> PathUtil.inputStream(jar), new ProcessingId(path, e.id.source));
+							}
+							sink.sink(() -> GsonUtil.toIs(quiltModJson, gson), e.id);
+						} else {
+							sink.sink(e.in, e.id);
+						}
+					}
+				}
+			}
+		};
 	}
 
 	@Override

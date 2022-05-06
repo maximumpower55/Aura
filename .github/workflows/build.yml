@@ -25,9 +25,3 @@ jobs:
 
       - name: Build with Brachyura
         run: java -jar brachyura-bootstrap-0.jar build
-
-      - name: Upload build Artifacts
-        uses: actions/upload-artifact@v2
-        with:
-          name: Artifacts
-          path: build/libs/
